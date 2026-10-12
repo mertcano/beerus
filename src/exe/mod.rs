@@ -46,6 +46,13 @@ pub mod map;
 
 use err::Error;
 
+/// Maximum gas a single `starknet_call` / `starknet_getStorageAt` execution may consume.
+///
+/// Paired with `limit_steps_by_resources = true`, this bounds the work one client request can
+/// cause on a blocking thread. It is deliberately generous so ordinary reads are unaffected,
+/// while still guaranteeing termination for a contract with an unbounded loop.
+const MAX_CALL_GAS: u64 = 1_000_000_000;
+
 pub fn call<T: gen::client::blocking::HttpClient>(
     client: gen::client::blocking::Client<T>,
     function_call: gen::FunctionCall,
@@ -111,7 +118,18 @@ pub fn call<T: gen::client::blocking::HttpClient>(
     });
 
     let tx_context = Arc::new(TransactionContext { block_context, tx_info });
-    let limit_steps_by_resources = false;
+
+    // SECURITY: `limit_steps_by_resources` was `false`, which disabled the blockifier's
+    // step/resource accounting, while `initial_gas` was `u64::MAX`. The combination means
+    // there was no upper bound at all on the Cairo executed for a `starknet_call` or
+    // `starknet_getStorageAt`: a contract containing an unbounded loop runs until it
+    // finishes. Because `rpc.rs` dispatches these calls onto blocking threads, an attacker
+    // able to reach the RPC endpoint can repeat such a request until the blocking pool is
+    // saturated — a remote CPU-exhaustion denial of service.
+    //
+    // Enabling the resource limit makes the blockifier abort execution once the configured
+    // budget is spent, returning a normal error to the caller instead of hanging the thread.
+    let limit_steps_by_resources = true;
     let mut context = EntryPointExecutionContext::new(
         tx_context.clone(),
         ExecutionMode::Execute,
@@ -127,7 +145,11 @@ pub fn call<T: gen::client::blocking::HttpClient>(
         storage_address: ContractAddress(contract_address.try_into()?),
         caller_address: ContractAddress::default(),
         call_type: CallType::Call,
-        initial_gas: u64::MAX,
+        // SECURITY: was `u64::MAX`, i.e. no gas ceiling at all for a single call. Bounded to
+        // a large but finite budget so a pathological contract fails with an out-of-gas error
+        // rather than monopolising the blocking thread indefinitely. The value is generous
+        // enough for legitimate reads.
+        initial_gas: MAX_CALL_GAS,
     };
 
     let state_proxy: StateProxy<T> = StateProxy { client, state };

@@ -46,7 +46,16 @@ fn default_poll_secs() -> u64 {
 }
 
 fn default_rpc_addr() -> SocketAddr {
-    SocketAddr::from(([0, 0, 0, 0], 3030))
+    // SECURITY: this previously defaulted to 0.0.0.0, so every deployment that did not
+    // explicitly set `RPC_ADDR` exposed the JSON-RPC endpoint on all interfaces, with no
+    // authentication. That endpoint serves `starknet_call` / `starknet_getStorageAt`,
+    // which execute Cairo on the server, so a default public bind turns the node into a
+    // network-reachable CPU-exhaustion target.
+    //
+    // Loopback is the correct default: it is safe out of the box and still reachable through
+    // an SSH tunnel or a reverse proxy. Operators who genuinely need a public bind must set
+    // `RPC_ADDR` explicitly and terminate authentication in front of it.
+    SocketAddr::from(([127, 0, 0, 1], 3030))
 }
 
 impl ServerConfig {
